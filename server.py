@@ -1,10 +1,13 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from yt_dlp import YoutubeDL
+import requests
+import os
+import uuid
 
 app = FastAPI()
 
-# Allow access from anywhere (important for your Flutter app)
+# CORS for Flutter app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -12,49 +15,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Health check
+@app.get("/")
+def home():
+    return {"status": "server running"}
 
-@app.get("/extract")
-def extract(url: str):
-    """
-    Extract downloadable formats (video/audio) from YouTube, TikTok, Facebook,
-    Instagram, direct files, and 1000+ supported sites.
-    """
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "nocheckcertificate": True,
-    }
-
+# Main download API
+@app.post("/download")
+def download_file(url: str):
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Create temp folder
+        if not os.path.exists("downloads"):
+            os.makedirs("downloads")
 
-    formats = []
-    for f in info.get("formats", []):
-        if not f.get("url"):
-            continue
+        # Generate unique filename
+        file_name = url.split("/")[-1].split("?")[0]
+        if file_name == "":
+            file_name = f"file_{uuid.uuid4()}"
+        file_path = f"downloads/{file_name}"
 
-        quality = f.get("format_note") or ""
-        if f.get("height"):
-            quality = f"{f.get('height')}p {quality}".strip()
+        # Download file
+        response = requests.get(url, stream=True, timeout=60)
 
-        formats.append(
-            {
-                "id": f.get("format_id"),
-                "ext": f.get("ext") or "",
-                "quality": quality or "Unknown",
-                "acodec": f.get("acodec"),
-                "vcodec": f.get("vcodec"),
-                "filesize": f.get("filesize") or f.get("filesize_approx"),
-                "url": f.get("url"),
-            }
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to download file")
+
+        with open(file_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 512):
+                if chunk:
+                    f.write(chunk)
+
+        return FileResponse(
+            file_path,
+            media_type="application/octet-stream",
+            filename=file_name,
         )
 
-    return {
-        "title": info.get("title"),
-        "thumbnail": info.get("thumbnail"),
-        "duration": info.get("duration"),
-        "formats": formats,
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
